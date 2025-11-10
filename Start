@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# Chemin du dossier utilisateur
+USER_HOME="/home/matteo34"
+AGENT_DIR="$USER_HOME/agentsystem"
+REPO_URL="https://github.com/Nawak05/agentsystem"
+
+# Aller dans le home
+cd "$USER_HOME" || { echo "Impossible d'accéder à $USER_HOME"; exit 1; }
+
+# Supprimer l'ancien dossier si il existe
+if [ -d "$AGENT_DIR" ]; then
+    echo "Suppression de l'ancien dossier agentsystem..."
+    rm -rf "$AGENT_DIR"
+fi
+
+# Cloner le repo
+echo "Clonage du dépôt GitHub..."
+git clone "$REPO_URL" || { echo "Échec du clone"; exit 1; }
+
+# Aller dans le dossier cloné
+cd "$AGENT_DIR" || { echo "Impossible d'accéder à $AGENT_DIR"; exit 1; }
+
+# Installer les dépendances npm
+echo "Installation des dépendances npm..."
+npm install || { echo "Échec de l'installation npm"; exit 1; }
+
+echo "Installation terminée avec succès !"
