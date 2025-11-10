@@ -3,6 +3,8 @@ const { io } = require("socket.io-client");
 const fs = require("fs");
 const path = require("path");
 const fetch = require("node-fetch");
+const tar = require("tar");
+
 
 const BACKEND_URL = "https://universellhub-hosting.shop";
 const AGENT_TOKEN = "TEST_AGENT_001"; // Doit correspondre à celui dans ta BDD (table agents)
@@ -56,6 +58,24 @@ async function downloadFivemServer(version, serverPath) {
     socket.emit("task_log", `✅ Téléchargement terminé : ${filePath}`);
 }
 
+
+// === Décompression du serveur FiveM ===
+async function extractFivemServer(filePath, serverPath) {
+    socket.emit("task_log", `📦 Décompression de ${path.basename(filePath)}...`);
+
+    try {
+        await tar.x({
+            file: filePath,
+            cwd: serverPath, // dossier de destination
+        });
+        socket.emit("task_log", "✅ Décompression terminée !");
+    } catch (err) {
+        socket.emit("task_log", `❌ Erreur lors de la décompression : ${err.message}`);
+        throw err;
+    }
+}
+
+
 // === Réception des tâches ===
 socket.on("task_assign", async ({ task }) => {
     console.log("📥 Tâche reçue :", task);
@@ -73,6 +93,8 @@ socket.on("task_assign", async ({ task }) => {
             // Télécharge les fichiers si c'est du FiveM
             if (game_type === "fivem") {
                 await downloadFivemServer(version, serverPath);
+                const filePath = path.join(serverPath, `fivem_${version}.tar.xz`);
+                await extractFivemServer(filePath, serverPath);
             }
 
             socket.emit("task_log", `🧩 Configuration terminée !`);
