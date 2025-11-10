@@ -3,6 +3,7 @@ const { io } = require("socket.io-client");
 const fs = require("fs");
 const path = require("path");
 const decompress = require("decompress");
+const decompressTarxz = require("decompress-tarxz");
 
 
 const BACKEND_URL = "https://universellhub-hosting.shop";
@@ -59,17 +60,24 @@ async function downloadFivemServer(version, serverPath) {
 
 
 // === Décompression du serveur FiveM ===
+
 async function extractFivemServer(filePath, serverPath) {
     socket.emit("task_log", `📦 Décompression de ${path.basename(filePath)}...`);
 
     try {
-        await decompress(filePath, serverPath);
+        await decompress(filePath, serverPath, {
+            plugins: [decompressTarxz()]
+        });
+
         socket.emit("task_log", "✅ Décompression terminée !");
+        console.log("✅ Décompression terminée :", serverPath);
     } catch (err) {
         socket.emit("task_log", `❌ Erreur lors de la décompression : ${err.message}`);
+        console.error("❌ Erreur lors de la décompression :", err);
         throw err;
     }
 }
+
 
 
 // === Réception des tâches ===
