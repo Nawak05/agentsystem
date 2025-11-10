@@ -2,7 +2,6 @@
 const { io } = require("socket.io-client");
 const fs = require("fs");
 const path = require("path");
-const fetch = require("node-fetch");
 const tar = require("tar");
 
 
