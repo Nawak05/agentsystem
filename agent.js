@@ -2,7 +2,7 @@
 const { io } = require("socket.io-client");
 const fs = require("fs");
 const path = require("path");
-const tar = require("tar");
+const decompress = require("decompress");
 
 
 const BACKEND_URL = "https://universellhub-hosting.shop";
@@ -63,10 +63,7 @@ async function extractFivemServer(filePath, serverPath) {
     socket.emit("task_log", `📦 Décompression de ${path.basename(filePath)}...`);
 
     try {
-        await tar.x({
-            file: filePath,
-            cwd: serverPath, // dossier de destination
-        });
+        await decompress(filePath, serverPath);
         socket.emit("task_log", "✅ Décompression terminée !");
     } catch (err) {
         socket.emit("task_log", `❌ Erreur lors de la décompression : ${err.message}`);
