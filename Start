@@ -5,6 +5,13 @@ USER_HOME="/home/matteo34" # PC perso mais aussi sur les VPS la même racine roo
 AGENT_DIR="$USER_HOME/agentsystem"
 REPO_URL="https://github.com/Nawak05/agentsystem"
 
+# === Création de l'utilisateur agent avec sudo sans mot de passe ===
+if ! id "agentuser" >/dev/null 2>&1; then
+    echo "Création de l'utilisateur agentuser avec sudo sans mot de passe..."
+    sudo useradd -m agentuser
+    echo "agentuser ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/agentuser
+fi
+
 # Aller dans le home
 cd "$USER_HOME" || { echo "Impossible d'accéder à $USER_HOME"; exit 1; }
 
