@@ -1,57 +1,48 @@
 #!/bin/bash
 
-# Chemin du dossier utilisateur
-USER_HOME="/home/matteo34" # PC perso mais aussi sur les VPS la même racine root
-AGENT_DIR="$USER_HOME/agentsystem"
+# === Variables ===
+AGENT_HOME="/home/agentuser"
+AGENT_DIR="$AGENT_HOME/agentsystem"
 REPO_URL="https://github.com/Nawak05/agentsystem"
 
-# === Création de l'utilisateur agent avec sudo sans mot de passe ===
+# === Création de l'utilisateur agentuser ===
 if ! id "agentuser" >/dev/null 2>&1; then
-    echo "Création de l'utilisateur agentuser avec sudo sans mot de passe..."
+    echo "Création de l'utilisateur agentuser..."
     sudo useradd -m agentuser
     echo "agentuser ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/agentuser
 fi
 
-# Aller dans le home
-cd "$USER_HOME" || { echo "Impossible d'accéder à $USER_HOME"; exit 1; }
+# Aller dans le home de l’agent
+cd "$AGENT_HOME" || { echo "Impossible d'accéder à $AGENT_HOME"; exit 1; }
 
-# Supprimer l'ancien dossier si il existe
-if [ -d "$AGENT_DIR" ]; then
-    echo "Suppression de l'ancien dossier agentsystem..."
-    rm -rf "$AGENT_DIR"
-fi
+# Supprimer ancien dossier agentsystem
+[ -d "$AGENT_DIR" ] && rm -rf "$AGENT_DIR"
 
-# Cloner le repo
+# Cloner le dépôt
 echo "Clonage du dépôt GitHub..."
-git clone "$REPO_URL" || { echo "Échec du clone"; exit 1; }
-
-# Aller dans le dossier cloné
-cd "$AGENT_DIR" || { echo "Impossible d'accéder à $AGENT_DIR"; exit 1; }
+git clone "$REPO_URL" "$AGENT_DIR" || { echo "Échec du clone"; exit 1; }
+cd "$AGENT_DIR" || exit 1
 
 # Installer les dépendances npm
 echo "Installation des dépendances npm..."
-npm install || { echo "Échec de l'installation npm"; exit 1; }
+npm install || { echo "Échec npm install"; exit 1; }
 
-echo "Installation terminée avec succès !"
-
-# === Création de la clé SSH pour l'agent ===
-SSH_DIR="$USER_HOME/.ssh"
+# Création de la clé SSH pour l’agent
+SSH_DIR="$AGENT_HOME/.ssh"
 AGENT_KEY="$SSH_DIR/id_ed25519_agent"
-
 mkdir -p "$SSH_DIR"
 chmod 700 "$SSH_DIR"
 
 if [ ! -f "$AGENT_KEY" ]; then
-    echo "Génération de la paire de clés SSH pour l'agent..."
-    ssh-keygen -t ed25519 -f "$AGENT_KEY" -N "" -C "agent_system_key" || { echo "Échec de la génération de la clé SSH"; exit 1; }
+    echo "Génération de la clé SSH..."
+    ssh-keygen -t ed25519 -f "$AGENT_KEY" -N "" -C "agent_system_key"
 fi
 
-# Ajouter la clé publique à authorized_keys si elle n'y est pas déjà
+# Ajouter la clé publique à authorized_keys
 AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
 touch "$AUTHORIZED_KEYS"
 chmod 600 "$AUTHORIZED_KEYS"
-
 PUB_KEY_CONTENT=$(cat "$AGENT_KEY.pub")
 grep -qxF "$PUB_KEY_CONTENT" "$AUTHORIZED_KEYS" || echo "$PUB_KEY_CONTENT" >> "$AUTHORIZED_KEYS"
 
-echo "✅ Clé SSH de l'agent configurée. L'agent peut maintenant se connecter aux VPS sans mot de passe."
+echo "✅ Agent installé dans $AGENT_HOME"
