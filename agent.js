@@ -91,27 +91,51 @@ async function extractFivemServer(filePath, serverPath) {
 }
 
 // === Création d'un utilisateur Linux pour le serveur et SFTP ===
+// === Création d'un utilisateur Linux pour le serveur et SFTP ===
 async function setupSFTPUser(serverId) {
-    socket.emit("task_log", "🔑 Configuration dossier serveur...");
+    socket.emit("task_log", "🔑 Configuration utilisateur SFTP...");
     try {
-        const username = "agentuser";
-        const password = "teste";
-        const homeDir = `/home/${username}`;
-        const serverPathFixed = path.join(homeDir, `server_${serverId}`);
+        const username = `server_${serverId}`;
+        const password = Math.random().toString(36).slice(-10);
+        const serverPath = `/home/agentuser/agentsystem/servers/server_${serverId}`;
 
-        // 1️⃣ Créer le dossier si nécessaire
-        if (!fs.existsSync(serverPathFixed)) fs.mkdirSync(serverPathFixed, { recursive: true });
+        // 1️⃣ Créer le dossier serveur s’il n’existe pas
+        if (!fs.existsSync(serverPath)) fs.mkdirSync(serverPath, { recursive: true });
 
-        // 2️⃣ Changer les permissions avec un chemin échappé
-        execSync(`sudo chown -R ${username}:${username} "${serverPathFixed}"`);
+        // 2️⃣ Créer un sous-dossier accessible pour SFTP
+        const dataDir = path.join(serverPath, "data");
+        if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
 
-        socket.emit("task_log", `✅ Dossier serveur prêt : ${serverPathFixed}`);
-        return { username, password, serverPath: serverPathFixed };
+        // 3️⃣ Créer l'utilisateur système
+        execSync(`
+            sudo useradd -m -d /home/${username} -s /usr/sbin/nologin ${username} || true
+            echo "${username}:${password}" | sudo chpasswd
+        `);
+
+        // 4️⃣ Configurer le chroot SFTP
+        const sshdConfig = `
+Match User ${username}
+    ChrootDirectory ${serverPath}
+    ForceCommand internal-sftp
+    AllowTcpForwarding no
+    X11Forwarding no
+`;
+        execSync(`echo "${sshdConfig}" | sudo tee -a /etc/ssh/sshd_config`);
+        execSync(`sudo systemctl restart ssh`);
+
+        // 5️⃣ Permissions correctes
+        execSync(`sudo chown root:root ${serverPath}`);
+        execSync(`sudo chmod 755 ${serverPath}`);
+        execSync(`sudo chown ${username}:${username} ${dataDir}`);
+
+        socket.emit("task_log", `✅ Utilisateur SFTP créé : ${username} (${password})`);
+        return { username, password, path: serverPath };
     } catch (err) {
-        socket.emit("task_log", `❌ Erreur SFTP : ${err.message}`);
+        socket.emit("task_log", `❌ Erreur création SFTP : ${err.message}`);
         throw err;
     }
 }
+
 
 // === Configuration base de données MySQL pour le serveur ===
 async function setupDatabase(serverId) {
