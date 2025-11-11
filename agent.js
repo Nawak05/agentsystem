@@ -43,24 +43,17 @@ async function installSystemDependencies() {
 
 // === Création d'un utilisateur Linux pour le serveur et SFTP ===
 async function setupSFTPUser(serverId) {
-    socket.emit("task_log", "🔑 Création utilisateur SFTP pour le serveur...");
+    socket.emit("task_log", "🔑 Configuration dossier serveur...");
     try {
-        const username = `fivem_${serverId}`;
-        const homeDir = `/home/${username}`;  // Home dédié
-        const password = Math.random().toString(36).slice(-12);
-
-        // Créer l'utilisateur SFTP avec son home
-        execSync(`sudo useradd -m -d ${homeDir} -s /usr/sbin/nologin ${username} || true`);
-        execSync(`sudo bash -c 'echo "${username}:${password}" | chpasswd'`);
-
-        // Créer le dossier serveur dans son home
+        const username = "agentuser";              // Utilisateur fixe
+        const password = "Tester123";       // Mot de passe connu pour SFTP
+        const homeDir = `/home/${username}`;
         const serverPath = path.join(homeDir, `server_${serverId}`);
+
         if (!fs.existsSync(serverPath)) fs.mkdirSync(serverPath, { recursive: true });
+        execSync(`sudo chown -R ${username}:${username} ${serverPath}`);
 
-        // Donner les bonnes permissions
-        execSync(`sudo chown -R ${username}:${username} ${homeDir}`);
-
-        socket.emit("task_log", `✅ Utilisateur SFTP créé : ${username} / ${password}`);
+        socket.emit("task_log", `✅ Dossier serveur prêt : ${serverPath}`);
         return { username, password, serverPath };
     } catch (err) {
         socket.emit("task_log", `❌ Erreur SFTP : ${err.message}`);
