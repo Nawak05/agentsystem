@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Chemin du dossier utilisateur
-USER_HOME="/home/matteo34"
+USER_HOME="/home/matteo34" # PC perso mais aussi sur les VPS la même racine root
 AGENT_DIR="$USER_HOME/agentsystem"
 REPO_URL="https://github.com/Nawak05/agentsystem"
 
@@ -26,3 +26,25 @@ echo "Installation des dépendances npm..."
 npm install || { echo "Échec de l'installation npm"; exit 1; }
 
 echo "Installation terminée avec succès !"
+
+# === Création de la clé SSH pour l'agent ===
+SSH_DIR="$USER_HOME/.ssh"
+AGENT_KEY="$SSH_DIR/id_ed25519_agent"
+
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+
+if [ ! -f "$AGENT_KEY" ]; then
+    echo "Génération de la paire de clés SSH pour l'agent..."
+    ssh-keygen -t ed25519 -f "$AGENT_KEY" -N "" -C "agent_system_key" || { echo "Échec de la génération de la clé SSH"; exit 1; }
+fi
+
+# Ajouter la clé publique à authorized_keys si elle n'y est pas déjà
+AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
+touch "$AUTHORIZED_KEYS"
+chmod 600 "$AUTHORIZED_KEYS"
+
+PUB_KEY_CONTENT=$(cat "$AGENT_KEY.pub")
+grep -qxF "$PUB_KEY_CONTENT" "$AUTHORIZED_KEYS" || echo "$PUB_KEY_CONTENT" >> "$AUTHORIZED_KEYS"
+
+echo "✅ Clé SSH de l'agent configurée. L'agent peut maintenant se connecter aux VPS sans mot de passe."

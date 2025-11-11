@@ -7,7 +7,7 @@ const decompressTarxz = require("decompress-tarxz");
 const { execSync } = require("child_process");
 
 const BACKEND_URL = "https://universellhub-hosting.shop";
-const AGENT_TOKEN = "TEST_AGENT_001";
+const AGENT_TOKEN = "TEST_AGENT_001"; // Doit correspondre à celui dans ta BDD (table agents)
 
 // === Connexion Socket.IO ===
 const socket = io(BACKEND_URL, {
@@ -43,20 +43,20 @@ async function createServerFolder(serverId, gameType, version) {
     return serverPath;
 }
 
-// === Installation dépendances système ===
-async function installSystemDependencies() {
+// === Installation des dépendances système ===
+async function installSystemDependencies(rootPassword) {
     socket.emit("task_log", "💻 Installation des dépendances système...");
     try {
         execSync(`
-            apt update &&
-            apt install -y curl wget unzip xz-utils tar git sudo openssh-server mysql-server mysql-client
+            echo "${rootPassword}" | sudo -S apt update &&
+            echo "${rootPassword}" | sudo -S apt install -y curl wget unzip xz-utils tar git sudo openssh-server mysql-server mysql-client
         `, { stdio: "inherit" });
 
-        execSync("systemctl enable ssh && systemctl start ssh", { stdio: "inherit" });
+        execSync(`echo "${rootPassword}" | sudo -S systemctl enable ssh && echo "${rootPassword}" | sudo -S systemctl start ssh`, { stdio: "inherit" });
 
         socket.emit("task_log", "✅ Dépendances système installées !");
     } catch (err) {
-        socket.emit("task_log", `❌ Erreur lors de l'installation des dépendances : ${err.message}`);
+        socket.emit("task_log", `❌ Erreur dépendances système : ${err.message}`);
         throw err;
     }
 }
@@ -76,40 +76,39 @@ async function downloadFivemServer(version, serverPath) {
     socket.emit("task_log", `✅ Téléchargement terminé : ${filePath}`);
 }
 
-// === Décompression FiveM ===
+// === Décompression du serveur FiveM ===
 async function extractFivemServer(filePath, serverPath) {
     socket.emit("task_log", `📦 Décompression de ${path.basename(filePath)}...`);
-
     try {
         await decompress(filePath, serverPath, { plugins: [decompressTarxz()] });
         fs.unlinkSync(filePath);
-        socket.emit("task_log", `✅ Décompression terminée et fichier supprimé`);
+        socket.emit("task_log", `✅ Décompression terminée et fichier supprimé : ${path.basename(filePath)}`);
     } catch (err) {
-        socket.emit("task_log", `❌ Erreur lors de la décompression : ${err.message}`);
+        socket.emit("task_log", `❌ Erreur décompression : ${err.message}`);
         throw err;
     }
 }
 
-// === Création utilisateur SFTP ===
-async function setupSFTPUser(serverId, serverPath) {
+// === Création d'un utilisateur Linux pour le serveur et SFTP ===
+async function setupSFTPUser(serverId, serverPath, rootPassword) {
     socket.emit("task_log", "🔑 Création utilisateur SFTP pour le serveur...");
     try {
         const username = `fivem_${serverId}`;
         const password = Math.random().toString(36).slice(-12);
 
-        execSync(`useradd -m -d ${serverPath} -s /usr/sbin/nologin ${username} || true`);
-        execSync(`echo "${username}:${password}" | chpasswd`);
+        execSync(`echo "${rootPassword}" | sudo -S useradd -m -d ${serverPath} -s /usr/sbin/nologin ${username} || true`);
+        execSync(`echo "${rootPassword}" | sudo -S bash -c 'echo "${username}:${password}" | chpasswd'`);
 
         socket.emit("task_log", `✅ Utilisateur SFTP créé : ${username} / ${password}`);
         return { username, password };
     } catch (err) {
-        socket.emit("task_log", `❌ Erreur création utilisateur SFTP : ${err.message}`);
+        socket.emit("task_log", `❌ Erreur SFTP : ${err.message}`);
         throw err;
     }
 }
 
-// === Configuration DB ===
-async function setupDatabase(serverId) {
+// === Configuration base de données MySQL pour le serveur ===
+async function setupDatabase(serverId, rootPassword) {
     socket.emit("task_log", "🗄️ Configuration de la base de données...");
     try {
         const dbName = `fivem_server_${serverId}`;
@@ -117,13 +116,13 @@ async function setupDatabase(serverId) {
         const dbPass = Math.random().toString(36).slice(-12);
 
         execSync(`
-            mysql -e "CREATE DATABASE IF NOT EXISTS ${dbName};"
-            mysql -e "CREATE USER IF NOT EXISTS '${dbUser}'@'localhost' IDENTIFIED BY '${dbPass}';"
-            mysql -e "GRANT ALL PRIVILEGES ON ${dbName}.* TO '${dbUser}'@'localhost';"
-            mysql -e "FLUSH PRIVILEGES;"
+            echo "${rootPassword}" | sudo -S mysql -e "CREATE DATABASE IF NOT EXISTS ${dbName};"
+            echo "${rootPassword}" | sudo -S mysql -e "CREATE USER IF NOT EXISTS '${dbUser}'@'localhost' IDENTIFIED BY '${dbPass}';"
+            echo "${rootPassword}" | sudo -S mysql -e "GRANT ALL PRIVILEGES ON ${dbName}.* TO '${dbUser}'@'localhost';"
+            echo "${rootPassword}" | sudo -S mysql -e "FLUSH PRIVILEGES;"
         `, { stdio: "inherit" });
 
-        socket.emit("task_log", `✅ Base de données créée : ${dbName}`);
+        socket.emit("task_log", `✅ Base créée : ${dbName} (user: ${dbUser})`);
         return { dbName, dbUser, dbPass };
     } catch (err) {
         socket.emit("task_log", `❌ Erreur DB : ${err.message}`);
@@ -133,30 +132,40 @@ async function setupDatabase(serverId) {
 
 // === Réception des tâches ===
 socket.on("task_assign", async ({ task }) => {
+    console.log("📥 Tâche reçue :", task);
+
     if (task.type === "install") {
-        const { game_type, version, serverId } = task;
+        const { game_type, version, serverId, root_password } = task;
+
         try {
             socket.emit("task_log", `🔧 Installation de ${game_type} ${version}...`);
 
-            await installSystemDependencies();
+            // 1️⃣ Installer les dépendances système
+            await installSystemDependencies(root_password);
+
+            // 2️⃣ Crée le dossier du serveur
             const serverPath = await createServerFolder(serverId, game_type, version);
 
-            const dbInfo = await setupDatabase(serverId);
+            // 3️⃣ Config DB
+            const dbInfo = await setupDatabase(serverId, root_password);
             fs.writeFileSync(path.join(serverPath, "db.json"), JSON.stringify(dbInfo, null, 2));
 
-            const sftpInfo = await setupSFTPUser(serverId, serverPath);
+            // 4️⃣ Création utilisateur SFTP
+            const sftpInfo = await setupSFTPUser(serverId, serverPath, root_password);
             fs.writeFileSync(path.join(serverPath, "sftp.json"), JSON.stringify(sftpInfo, null, 2));
 
+            // 5️⃣ Téléchargement + extraction FiveM
             if (game_type === "fivem") {
                 await downloadFivemServer(version, serverPath);
                 const filePath = path.join(serverPath, `fivem_${version}.tar.xz`);
                 await extractFivemServer(filePath, serverPath);
             }
 
-            socket.emit("task_log", `🧩 Installation terminée !`);
             socket.emit("task_done", { taskId: task.taskId, serverId, status: "success" });
+            console.log(`✅ Installation terminée pour le serveur ${serverId}`);
         } catch (err) {
             socket.emit("task_done", { taskId: task.taskId, serverId, status: "error", error: err.message });
+            console.error("❌ Erreur lors de l'installation :", err);
         }
     }
 });
