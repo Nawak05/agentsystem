@@ -1,48 +1,62 @@
 #!/bin/bash
+set -euo pipefail
 
 # === Variables ===
-AGENT_HOME="/home/agentuser"
-AGENT_DIR="$AGENT_HOME/agentsystem"
+AGENT_USER="ubuntu"
+AGENT_HOME="/home/${AGENT_USER}"
+AGENT_DIR="${AGENT_HOME}/agentsystem"
 REPO_URL="https://github.com/Nawak05/agentsystem"
+NODE_BIN="/usr/bin/node"   # vérifier chemin node (node -v pour tester)
 
-# === Création de l'utilisateur agentuser ===
-if ! id "agentuser" >/dev/null 2>&1; then
-    echo "Création de l'utilisateur agentuser..."
-    sudo useradd -m agentuser
-    echo "agentuser ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/agentuser
+# === Vérifie que l'utilisateur existe ===
+if ! id "${AGENT_USER}" >/dev/null 2>&1; then
+    echo "Création de l'utilisateur ${AGENT_USER}..."
+    sudo useradd -m "${AGENT_USER}"
+    echo "${AGENT_USER} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${AGENT_USER}
 fi
 
-# Aller dans le home de l’agent
-cd "$AGENT_HOME" || { echo "Impossible d'accéder à $AGENT_HOME"; exit 1; }
+# Aller dans le home de ubuntu
+cd "${AGENT_HOME}" || { echo "Impossible d'accéder à ${AGENT_HOME}"; exit 1; }
 
 # Supprimer ancien dossier agentsystem
-[ -d "$AGENT_DIR" ] && rm -rf "$AGENT_DIR"
-
-# Cloner le dépôt
-echo "Clonage du dépôt GitHub..."
-git clone "$REPO_URL" "$AGENT_DIR" || { echo "Échec du clone"; exit 1; }
-cd "$AGENT_DIR" || exit 1
-
-# Installer les dépendances npm
-echo "Installation des dépendances npm..."
-npm install || { echo "Échec npm install"; exit 1; }
-
-# Création de la clé SSH pour l’agent
-SSH_DIR="$AGENT_HOME/.ssh"
-AGENT_KEY="$SSH_DIR/id_ed25519_agent"
-mkdir -p "$SSH_DIR"
-chmod 700 "$SSH_DIR"
-
-if [ ! -f "$AGENT_KEY" ]; then
-    echo "Génération de la clé SSH..."
-    ssh-keygen -t ed25519 -f "$AGENT_KEY" -N "" -C "agent_system_key"
+if [ -d "${AGENT_DIR}" ]; then
+    echo "Suppression de l'ancien dossier ${AGENT_DIR}..."
+    sudo rm -rf "${AGENT_DIR}"
 fi
 
-# Ajouter la clé publique à authorized_keys
-AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
-touch "$AUTHORIZED_KEYS"
-chmod 600 "$AUTHORIZED_KEYS"
-PUB_KEY_CONTENT=$(cat "$AGENT_KEY.pub")
-grep -qxF "$PUB_KEY_CONTENT" "$AUTHORIZED_KEYS" || echo "$PUB_KEY_CONTENT" >> "$AUTHORIZED_KEYS"
+# Cloner le dépôt
+echo "📦 Clonage du dépôt GitHub..."
+sudo -u "${AGENT_USER}" git clone "${REPO_URL}" "${AGENT_DIR}" || { echo "❌ Échec du clone"; exit 1; }
 
-echo "✅ Agent installé dans $AGENT_HOME"
+# Aller dans le dossier et installer npm deps en tant qu'ubuntu
+echo "📦 Installation des dépendances npm..."
+cd "${AGENT_DIR}" || exit 1
+sudo -u "${AGENT_USER}" bash -lc "npm install --no-audit --no-fund" || { echo "❌ Échec npm install"; exit 1; }
+
+# Assurer la bonne propriété
+sudo chown -R "${AGENT_USER}:${AGENT_USER}" "${AGENT_DIR}"
+
+# Création de la clé SSH (optionnel) dans /home/ubuntu/.ssh
+SSH_DIR="${AGENT_HOME}/.ssh"
+AGENT_KEY="${SSH_DIR}/id_ed25519_agent"
+sudo -u "${AGENT_USER}" mkdir -p "${SSH_DIR}"
+sudo chmod 700 "${SSH_DIR}"
+
+if [ ! -f "${AGENT_KEY}" ]; then
+    echo "🔑 Génération de la clé SSH pour ${AGENT_USER}..."
+    sudo -u "${AGENT_USER}" ssh-keygen -t ed25519 -f "${AGENT_KEY}" -N "" -C "agent_system_key"
+fi
+
+# Ajouter la clé publique à authorized_keys (et fixer propriétaire)
+AUTHORIZED_KEYS="${SSH_DIR}/authorized_keys"
+sudo -u "${AGENT_USER}" touch "${AUTHORIZED_KEYS}"
+sudo chmod 600 "${AUTHORIZED_KEYS}"
+PUB_KEY_CONTENT=$(sudo -u "${AGENT_USER}" cat "${AGENT_KEY}.pub")
+# append if not present
+sudo -u "${AGENT_USER}" bash -lc "grep -qxF '${PUB_KEY_CONTENT}' '${AUTHORIZED_KEYS}' || echo '${PUB_KEY_CONTENT}' >> '${AUTHORIZED_KEYS}'"
+
+# Fix permissions (owner ubuntu)
+sudo chown -R "${AGENT_USER}:${AGENT_USER}" "${SSH_DIR}"
+
+echo "✅ Agent installé dans ${AGENT_HOME}"
+echo "Prochaine étape : créer/installer le service systemd (optionnel mais recommandé)."
