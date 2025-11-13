@@ -1,62 +1,127 @@
 #!/bin/bash
 set -euo pipefail
 
-# === Variables ===
-AGENT_USER="ubuntu"
+# === CONFIG ===
+AGENT_USER="ubuntu"                       # user to run agent (common on OVH)
 AGENT_HOME="/home/${AGENT_USER}"
 AGENT_DIR="${AGENT_HOME}/agentsystem"
 REPO_URL="https://github.com/Nawak05/agentsystem"
-NODE_BIN="/usr/bin/node"   # vérifier chemin node (node -v pour tester)
+SUDOERS_FILE="/etc/sudoers.d/agent-usr"
 
-# === Vérifie que l'utilisateur existe ===
-if ! id "${AGENT_USER}" >/dev/null 2>&1; then
-    echo "Création de l'utilisateur ${AGENT_USER}..."
-    sudo useradd -m "${AGENT_USER}"
-    echo "${AGENT_USER} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${AGENT_USER}
+# Liste des commandes qu'on autorise pour l'agent via sudo (NOPASSWD)
+# Ajuste si nécessaire : garder minimal pour limiter les risques.
+ALLOWED_CMDS=(
+  "/usr/bin/apt"
+  "/usr/bin/apt-get"
+  "/bin/systemctl"
+  "/usr/bin/mysql"
+  "/usr/bin/mysqladmin"
+  "/bin/cp"
+  "/bin/chown"
+  "/bin/chmod"
+  "/bin/mkdir"
+  "/bin/rm"
+  "/bin/tar"
+  "/usr/bin/git"
+  "/usr/bin/wget"
+  "/usr/bin/curl"
+)
+
+echo "🚀 Setup UniversellHub Agent - $(date)"
+
+# === 0) Pré-requis: être root (script doit être lancé via sudo) ===
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "ERREUR: ce script doit être lancé en root ou via sudo."
+  exit 1
 fi
 
-# Aller dans le home de ubuntu
-cd "${AGENT_HOME}" || { echo "Impossible d'accéder à ${AGENT_HOME}"; exit 1; }
-
-# Supprimer ancien dossier agentsystem
-if [ -d "${AGENT_DIR}" ]; then
-    echo "Suppression de l'ancien dossier ${AGENT_DIR}..."
-    sudo rm -rf "${AGENT_DIR}"
+# === 1) Vérifier/Créer utilisateur si besoin ===
+if id "${AGENT_USER}" >/dev/null 2>&1; then
+  echo "👤 Utilisateur ${AGENT_USER} existe déjà."
+else
+  echo "➕ Création de l'utilisateur ${AGENT_USER} (sans mot de passe)..."
+  adduser --disabled-password --gecos "" "${AGENT_USER}"
 fi
 
-# Cloner le dépôt
-echo "📦 Clonage du dépôt GitHub..."
-sudo -u "${AGENT_USER}" git clone "${REPO_URL}" "${AGENT_DIR}" || { echo "❌ Échec du clone"; exit 1; }
-
-# Aller dans le dossier et installer npm deps en tant qu'ubuntu
-echo "📦 Installation des dépendances npm..."
-cd "${AGENT_DIR}" || exit 1
-sudo -u "${AGENT_USER}" bash -lc "npm install --no-audit --no-fund" || { echo "❌ Échec npm install"; exit 1; }
-
-# Assurer la bonne propriété
-sudo chown -R "${AGENT_USER}:${AGENT_USER}" "${AGENT_DIR}"
-
-# Création de la clé SSH (optionnel) dans /home/ubuntu/.ssh
-SSH_DIR="${AGENT_HOME}/.ssh"
-AGENT_KEY="${SSH_DIR}/id_ed25519_agent"
-sudo -u "${AGENT_USER}" mkdir -p "${SSH_DIR}"
-sudo chmod 700 "${SSH_DIR}"
-
-if [ ! -f "${AGENT_KEY}" ]; then
-    echo "🔑 Génération de la clé SSH pour ${AGENT_USER}..."
-    sudo -u "${AGENT_USER}" ssh-keygen -t ed25519 -f "${AGENT_KEY}" -N "" -C "agent_system_key"
+# === 2) Installer Node, npm, git, et dépendances de base si manquant ===
+if ! command -v node >/dev/null 2>&1; then
+  echo "📦 Installation Node.js (via NodeSource)..."
+  # installer NodeJS 18.x (stable pour 24.04) : adapte si besoin
+  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+  apt-get update
+  apt-get install -y nodejs git curl wget xz-utils unzip tar
 fi
 
-# Ajouter la clé publique à authorized_keys (et fixer propriétaire)
-AUTHORIZED_KEYS="${SSH_DIR}/authorized_keys"
-sudo -u "${AGENT_USER}" touch "${AUTHORIZED_KEYS}"
-sudo chmod 600 "${AUTHORIZED_KEYS}"
-PUB_KEY_CONTENT=$(sudo -u "${AGENT_USER}" cat "${AGENT_KEY}.pub")
-# append if not present
-sudo -u "${AGENT_USER}" bash -lc "grep -qxF '${PUB_KEY_CONTENT}' '${AUTHORIZED_KEYS}' || echo '${PUB_KEY_CONTENT}' >> '${AUTHORIZED_KEYS}'"
+# === 3) Créer dossier agent, cloner repo, npm install ===
+echo "📥 Préparation du dossier agent dans ${AGENT_DIR}..."
+rm -rf "${AGENT_DIR}"
+mkdir -p "${AGENT_DIR}"
+chown "${AGENT_USER}:${AGENT_USER}" "${AGENT_DIR}"
+chmod 750 "${AGENT_DIR}"
 
-# Fix permissions (owner ubuntu)
-sudo chown -R "${AGENT_USER}:${AGENT_USER}" "${SSH_DIR}"
+# Clonage en tant qu'utilisateur (évite fichiers root)
+sudo -u "${AGENT_USER}" git clone "${REPO_URL}" "${AGENT_DIR}"
 
-echo "✅ Agent installé dans ${AGENT_HOME}"
-echo "Prochaine étape : créer/installer le service systemd (optionnel mais recommandé)."
+echo "📦 Installation des dépendances npm (en tant que ${AGENT_USER})..."
+cd "${AGENT_DIR}"
+sudo -u "${AGENT_USER}" bash -lc "npm install --no-audit --no-fund"
+
+# === 4) Permissions sûres ===
+echo "🔧 Réglage permissions (sécurisé)…"
+chown -R "${AGENT_USER}:${AGENT_USER}" "${AGENT_DIR}"
+# droit d'exécution sur le répertoire agent et lecture/écriture pour owner
+chmod -R 750 "${AGENT_DIR}"
+
+# dossiers servers doivent être écrits par l'agent
+mkdir -p "${AGENT_DIR}/servers"
+chown -R "${AGENT_USER}:${AGENT_USER}" "${AGENT_DIR}/servers"
+chmod -R 770 "${AGENT_DIR}/servers"
+
+# === 5) Sudoers restreint pour l'utilisateur (NOPASSWD seulement sur commandes listées) ===
+echo "⚖️  Création sudoers restreint pour ${AGENT_USER}..."
+{
+  echo "# Sudoers restreint pour l'agent UniversellHub"
+  printf "%s ALL=(ALL) NOPASSWD: " "${AGENT_USER}"
+  # join commands with comma
+  IFS=','; echo "${ALLOWED_CMDS[*]}"
+} > "${SUDOERS_FILE}.tmp"
+
+# safe place the file (validate with visudo)
+visudo -cf "${SUDOERS_FILE}.tmp" >/dev/null 2>&1 || { echo "ERREUR: visudo check failed"; rm -f "${SUDOERS_FILE}.tmp"; exit 1; }
+mv "${SUDOERS_FILE}.tmp" "${SUDOERS_FILE}"
+chmod 440 "${SUDOERS_FILE}"
+
+echo "✅ sudoers restreint installé : ${SUDOERS_FILE}"
+
+# === 6) Systemd service file ===
+SERVICE_FILE=/etc/systemd/system/agent-system.service
+echo "⚙️  Création du service systemd..."
+cat > "${SERVICE_FILE}" <<EOF
+[Unit]
+Description=UniversellHub Agent
+After=network.target
+
+[Service]
+User=${AGENT_USER}
+Group=${AGENT_USER}
+WorkingDirectory=${AGENT_DIR}
+ExecStart=/usr/bin/node ${AGENT_DIR}/agent.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now agent-system.service
+
+echo "✅ Agent service démarré (systemctl status agent-system.service pour vérifier)."
+
+# === 7) Fix final et infos ===
+chown -R "${AGENT_USER}:${AGENT_USER}" "${AGENT_DIR}"
+echo "🔎 Vérification: user et droits du dossier agent"
+ls -ld "${AGENT_DIR}" "${AGENT_DIR}/servers" || true
+
+echo "🎉 Installation terminée. Voir logs: sudo journalctl -u agent-system.service -f"

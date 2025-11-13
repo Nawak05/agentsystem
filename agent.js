@@ -4,11 +4,12 @@ const path = require("path");
 const decompress = require("decompress");
 const decompressTarxz = require("decompress-tarxz");
 const { execSync } = require("child_process");
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const BACKEND_URL = "https://universellhub-hosting.shop";
-const AGENT_TOKEN = "TEST_AGENT_001"; // Doit correspondre à celui dans ta BDD
+const AGENT_TOKEN = "TEST_AGENT_001";
 
-// === Connexion Socket.IO ===
+// === Connexion socket ===
 const socket = io(BACKEND_URL, {
     path: "/agents",
     transports: ["websocket"],
@@ -23,26 +24,24 @@ socket.on("auth_ok", () => console.log("✅ Auth OK"));
 socket.on("auth_error", (e) => console.log("❌ Auth échouée :", e.message));
 socket.on("disconnect", () => console.log("❌ Déconnecté"));
 
-// === Création dossier serveur ===
+// === Création dossiers serveur ===
 async function createServerFolder(serverId, gameType, version) {
     const basePath = path.join(__dirname, "servers");
-    if (!fs.existsSync(basePath)) fs.mkdirSync(basePath);
-
     const serverPath = path.join(basePath, `server_${serverId}`);
-    if (!fs.existsSync(serverPath)) fs.mkdirSync(serverPath);
+    const metaPath = path.join(serverPath, "meta");
 
-    const configFile = path.join(serverPath, "config.json");
-    const defaultConfig = {
-        game_type: gameType,
-        version,
-        created_at: new Date().toISOString(),
-    };
-    fs.writeFileSync(configFile, JSON.stringify(defaultConfig, null, 2));
+    [basePath, serverPath, metaPath].forEach(dir => {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o770 });
+    });
 
-    return serverPath;
+    const configFile = path.join(metaPath, "config.json");
+    const defaultConfig = { game_type: gameType, version, created_at: new Date().toISOString() };
+    fs.writeFileSync(configFile, JSON.stringify(defaultConfig, null, 2), { mode: 0o660 });
+
+    return { serverPath, metaPath };
 }
 
-// === Installation des dépendances système ===
+// === Dépendances système ===
 async function installSystemDependencies() {
     socket.emit("task_log", "💻 Installation des dépendances système...");
     try {
@@ -52,7 +51,6 @@ async function installSystemDependencies() {
         `, { stdio: "inherit" });
 
         execSync(`sudo systemctl enable ssh && sudo systemctl start ssh`, { stdio: "inherit" });
-
         socket.emit("task_log", "✅ Dépendances système installées !");
     } catch (err) {
         socket.emit("task_log", `❌ Erreur dépendances système : ${err.message}`);
@@ -68,70 +66,54 @@ async function downloadFivemServer(version, serverPath) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Erreur téléchargement : ${res.status}`);
 
+    const tmpFile = `/tmp/fivem_${version}.tar.xz`;
     const buffer = await res.arrayBuffer();
-    const filePath = path.join(serverPath, `fivem_${version}.tar.xz`);
-    fs.writeFileSync(filePath, Buffer.from(buffer));
+    fs.writeFileSync(tmpFile, Buffer.from(buffer));
 
-    socket.emit("task_log", `✅ Téléchargement terminé : ${filePath}`);
+    const destFile = path.join(serverPath, `fivem_${version}.tar.xz`);
+    fs.copyFileSync(tmpFile, destFile);
+    fs.chmodSync(destFile, 0o660);
+
+    socket.emit("task_log", `✅ Téléchargement terminé : ${destFile}`);
 }
 
-// === Décompression du serveur FiveM ===
-async function extractFivemServer(filePath, serverPath) {
+// === Décompression FiveM ===
+async function extractFivemServer(version, serverPath) {
+    const filePath = path.join(serverPath, `fivem_${version}.tar.xz`);
     socket.emit("task_log", `📦 Décompression de ${path.basename(filePath)}...`);
     try {
         await decompress(filePath, serverPath, { plugins: [decompressTarxz()] });
-        fs.unlinkSync(filePath);
-        socket.emit("task_log", `✅ Décompression terminée et fichier supprimé : ${path.basename(filePath)}`);
+        fs.rmSync(filePath);
+        socket.emit("task_log", "✅ Décompression terminée !");
     } catch (err) {
         socket.emit("task_log", `❌ Erreur décompression : ${err.message}`);
         throw err;
     }
 }
 
-// === Création d'un utilisateur Linux pour le serveur et SFTP ===
+// === SFTP (fichier d’info) ===
 async function setupSFTPUser(serverId) {
     socket.emit("task_log", "🔑 Configuration utilisateur SFTP...");
-    try {
-        const username = `server_${serverId}`;
-        const password = Math.random().toString(36).slice(-10);
-        const serverPath = `/home/ubuntu/agentsystem/servers/server_${serverId}`;
 
-        // Dossiers
-        if (!fs.existsSync(serverPath)) fs.mkdirSync(serverPath, { recursive: true });
-        const dataDir = path.join(serverPath, "data");
-        if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
+    const serverPath = path.join(__dirname, "servers", `server_${serverId}`);
+    const dataDir = path.join(serverPath, "data");
 
-        // Créer utilisateur système
-        execSync(`
-            sudo useradd -m -d /home/${username} -s /usr/sbin/nologin ${username} || true
-            echo "${username}:${password}" | sudo chpasswd
-        `);
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true, mode: 0o770 });
 
-        // Config SSH chroot
-        const sshdConfig = `
-Match User ${username}
-    ChrootDirectory ${serverPath}
-    ForceCommand internal-sftp
-    AllowTcpForwarding no
-    X11Forwarding no
-`;
-        execSync(`echo "${sshdConfig}" | sudo tee -a /etc/ssh/sshd_config`);
-        execSync(`sudo systemctl restart ssh`);
+    const sftpInfo = {
+        username: `server_${serverId}`,
+        password: Math.random().toString(36).slice(-10),
+        path: serverPath
+    };
 
-        // Permissions
-        execSync(`sudo chown root:root ${serverPath}`);
-        execSync(`sudo chmod 755 ${serverPath}`);
-        execSync(`sudo chown ${username}:${username} ${dataDir}`);
+    const sftpFile = path.join(serverPath, "meta", "sftp.json");
+    fs.writeFileSync(sftpFile, JSON.stringify(sftpInfo, null, 2), { mode: 0o666 });
 
-        socket.emit("task_log", `✅ Utilisateur SFTP créé : ${username} (${password})`);
-        return { username, password, path: serverPath };
-    } catch (err) {
-        socket.emit("task_log", `❌ Erreur création SFTP : ${err.message}`);
-        throw err;
-    }
+    socket.emit("task_log", `✅ SFTP configuré : ${sftpInfo.username}`);
+    return sftpInfo;
 }
 
-// === Configuration base de données MySQL ===
+// === Base de données MySQL ===
 async function setupDatabase(serverId) {
     socket.emit("task_log", "🗄️ Configuration de la base de données...");
     try {
@@ -154,7 +136,7 @@ async function setupDatabase(serverId) {
     }
 }
 
-// === Gestion des tâches envoyées par le backend ===
+// === Gestion des tâches ===
 socket.on("task_assign", async ({ task }) => {
     console.log("📥 Tâche reçue :", task);
 
@@ -163,21 +145,28 @@ socket.on("task_assign", async ({ task }) => {
 
         try {
             socket.emit("task_log", `🔧 Installation de ${game_type} ${version}...`);
+
             await installSystemDependencies();
 
-            const serverPath = await createServerFolder(serverId, game_type, version);
+            const { serverPath, metaPath } = await createServerFolder(serverId, game_type, version);
 
             const dbInfo = await setupDatabase(serverId);
-            fs.writeFileSync(path.join(serverPath, "db.json"), JSON.stringify(dbInfo, null, 2));
+            fs.writeFileSync(path.join(metaPath, "db.json"), JSON.stringify(dbInfo, null, 2), { mode: 0o660 });
 
             const sftpInfo = await setupSFTPUser(serverId);
-            fs.writeFileSync(path.join(serverPath, "sftp.json"), JSON.stringify(sftpInfo, null, 2));
 
             if (game_type === "fivem") {
                 await downloadFivemServer(version, serverPath);
-                const filePath = path.join(serverPath, `fivem_${version}.tar.xz`);
-                await extractFivemServer(filePath, serverPath);
+                await extractFivemServer(version, serverPath);
             }
+
+            // Run.sh
+            const runScript = `#!/bin/bash
+cd ${serverPath}
+bash run.sh
+`;
+            const runFile = path.join(serverPath, "run.sh");
+            fs.writeFileSync(runFile, runScript, { mode: 0o770 });
 
             socket.emit("task_done", { taskId: task.taskId, serverId, status: "success" });
             console.log(`✅ Installation terminée pour le serveur ${serverId}`);
